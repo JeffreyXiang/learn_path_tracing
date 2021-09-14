@@ -13,7 +13,7 @@ Vec2f = ti.types.vector(2, ti.f32)
 Vec3f = ti.types.vector(3, ti.f32)
 Mat3f = ti.types.matrix(3, 3, ti.f32)
 Ray = ti.types.struct(ro=Vec3f, rd=Vec3f, l=Vec3f)
-Material = ti.types.struct(color=Vec3f, roughness=ti.f32, metalness=ti.i32, ior=ti.f32, absorptivity=ti.f32, transparency=ti.i32)
+Material = ti.types.struct(albedo=Vec3f, roughness=ti.f32, metallic=ti.i32, ior=ti.f32, absorptivity=ti.f32, transparency=ti.i32)
 HitRecord = ti.types.struct(point=Vec3f, normal=Vec3f, dir=ti.i32, t=ti.f32, material=Material)
 Sphere = ti.types.struct(center=Vec3f, radius=ti.f32, material=Material)
 AABB = ti.types.struct(low=Vec3f, high=Vec3f)
@@ -70,7 +70,7 @@ def rotate(yaw, pitch, roll=0):
 
 @ti.func
 def cal_reflectivity_metal(dir, normal, material):
-    F0 = material.color
+    F0 = material.albedo
     F = F0 + (1 - F0) * (1 + (normal.dot(dir)))**5
     return F
 
@@ -434,7 +434,7 @@ def propagate_once(rays: ti.template(), hits: ti.template()):
 @ti.kernel
 def gen_secondary_rays(rays: ti.template(), hits: ti.template()):
     for i, j, k in hits:
-        if hits[i, j, k].material.metalness:
+        if hits[i, j, k].material.metallic:
             F0 = cal_reflectivity_metal(rays[i, j, k].rd, hits[i, j, k].normal, hits[i, j, k].material)
             rays[i, j, k].rd = sample_reflect(rays[i, j, k].rd, hits[i, j, k].normal, hits[i, j, k].material)
             rays[i, j, k].l = rays[i, j, k].l * F0
@@ -443,10 +443,10 @@ def gen_secondary_rays(rays: ti.template(), hits: ti.template()):
             if ti.random(ti.f32) > F0:
                 if hits[i, j, k].material.transparency:
                     rays[i, j, k].rd = sample_refract(rays[i, j, k].rd, hits[i, j, k].normal, hits[i, j, k].material)
-                    rays[i, j, k].l = rays[i, j, k].l * hits[i, j, k].material.color * (1 - hits[i, j, k].material.absorptivity)
+                    rays[i, j, k].l = rays[i, j, k].l * hits[i, j, k].material.albedo * (1 - hits[i, j, k].material.absorptivity)
                 else:
                     rays[i, j, k].rd = sample_diffuse(hits[i, j, k].normal)
-                    rays[i, j, k].l = rays[i, j, k].l * hits[i, j, k].material.color * (1 - hits[i, j, k].material.absorptivity)
+                    rays[i, j, k].l = rays[i, j, k].l * hits[i, j, k].material.albedo * (1 - hits[i, j, k].material.absorptivity)
             else:
                 rays[i, j, k].rd = sample_reflect(rays[i, j, k].rd, hits[i, j, k].normal, hits[i, j, k].material)
                 rays[i, j, k].l = rays[i, j, k].l
@@ -484,7 +484,7 @@ def test_aabb(rays: ti.template()):
 def random_scene(size=11):
     world = World()
 
-    ground = Sphere(center=Vec3f([0,-10000,0]), radius=10000, material=Material(color=Vec3f([1, 1, 1]), roughness=1, metalness=0, ior=1.5, absorptivity=0.5, transparency=0))
+    ground = Sphere(center=Vec3f([0,-10000,0]), radius=10000, material=Material(albedo=Vec3f([1, 1, 1]), roughness=1, metallic=0, ior=1.5, absorptivity=0.5, transparency=0))
     world.add(ground)
 
     for a in range(-size, size):
@@ -493,25 +493,25 @@ def random_scene(size=11):
             center = Vec3f([a + 0.9 * np.random.rand(), 0.2, b + 0.9 * np.random.rand()])
 
             if (center - Vec3f([4, 0.2, 0])).norm() > 0.9:
-                color = Vec3f([np.random.rand(), np.random.rand(), np.random.rand()])
+                albedo = Vec3f([np.random.rand(), np.random.rand(), np.random.rand()])
                 if choose_mat < 0.8:
                     # diffuse
-                    sphere = Sphere(center=center, radius=0.2, material=Material(color=color, roughness=1, metalness=0, ior=1.5, absorptivity=0, transparency=0))
+                    sphere = Sphere(center=center, radius=0.2, material=Material(albedo=albedo, roughness=1, metallic=0, ior=1.5, absorptivity=0, transparency=0))
                     world.add(sphere)
                 elif choose_mat < 0.95:
                     # metal
-                    sphere = Sphere(center=center, radius=0.2, material=Material(color=0.5+0.5*color, roughness=0.5*np.random.rand(), metalness=1, ior=0, absorptivity=0, transparency=0))
+                    sphere = Sphere(center=center, radius=0.2, material=Material(albedo=0.5+0.5*albedo, roughness=0.5*np.random.rand(), metallic=1, ior=0, absorptivity=0, transparency=0))
                     world.add(sphere)
                 else:
                     # glass
-                    sphere = Sphere(center=center, radius=0.2, material=Material(color=0.75+0.25*color, roughness=0.2*np.random.rand(), metalness=0, ior=1.5, absorptivity=0, transparency=1))
+                    sphere = Sphere(center=center, radius=0.2, material=Material(albedo=0.75+0.25*albedo, roughness=0.2*np.random.rand(), metallic=0, ior=1.5, absorptivity=0, transparency=1))
                     world.add(sphere)
 
-    sphere = Sphere(center=Vec3f([0, 1, 0]), radius=1.0, material=Material(color=Vec3f([1, 1, 1]), roughness=0, metalness=0, ior=1.5, absorptivity=0, transparency=1))
+    sphere = Sphere(center=Vec3f([0, 1, 0]), radius=1.0, material=Material(albedo=Vec3f([1, 1, 1]), roughness=0, metallic=0, ior=1.5, absorptivity=0, transparency=1))
     world.add(sphere)
-    sphere = Sphere(center=Vec3f([-4, 1, 0]), radius=1.0, material=Material(color=Vec3f([0.4, 0.2, 0.1]), roughness=1, metalness=0, ior=1.5, absorptivity=0, transparency=0))
+    sphere = Sphere(center=Vec3f([-4, 1, 0]), radius=1.0, material=Material(albedo=Vec3f([0.4, 0.2, 0.1]), roughness=1, metallic=0, ior=1.5, absorptivity=0, transparency=0))
     world.add(sphere)
-    sphere = Sphere(center=Vec3f([4, 1, 0]), radius=1.0, material=Material(color=Vec3f([0.7, 0.6, 0.5]), roughness=0, metalness=1, ior=0, absorptivity=0, transparency=0))
+    sphere = Sphere(center=Vec3f([4, 1, 0]), radius=1.0, material=Material(albedo=Vec3f([0.7, 0.6, 0.5]), roughness=0, metallic=1, ior=0, absorptivity=0, transparency=0))
     world.add(sphere)
 
     world.build()

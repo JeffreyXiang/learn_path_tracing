@@ -8,7 +8,7 @@ ti.init(device_memory_GB=8, use_unified_memory=False, arch=ti.gpu)
 Vec3f = ti.types.vector(3, float)
 Mat3f = ti.types.matrix(3, 3, float)
 Ray = ti.types.struct(ro=Vec3f, rd=Vec3f, l=Vec3f)
-Material = ti.types.struct(color=Vec3f, roughness=ti.f32, metalness=ti.i32, ior=ti.f32, absorptivity=ti.f32)
+Material = ti.types.struct(albedo=Vec3f, roughness=ti.f32, metallic=ti.i32, ior=ti.f32, absorptivity=ti.f32)
 HitRecord = ti.types.struct(point=Vec3f, normal=Vec3f, t=ti.f32, material=Material)
 
 resolution = (1280, 720)
@@ -49,7 +49,7 @@ def rotate(yaw, pitch, roll=0):
 
 @ti.func
 def cal_reflectivity_metal(dir: ti.template(), normal: ti.template(), material: ti.template()):
-    F0 = material.color
+    F0 = material.albedo
     F = F0 + (1 - F0) * (1 + (normal.dot(dir)))**5
     return F
 
@@ -192,7 +192,7 @@ def propagate_once(rays: ti.template(), rays_next: ti.template()):
         record = world.hit(rays[i, j, k])
         if record.t >= 0:
             rays_next[i, j, k].ro = record.point
-            if record.material.metalness:
+            if record.material.metallic:
                 F0 = cal_reflectivity_metal(rays[i, j, k].rd, record.normal, record.material)
                 rays_next[i, j, k].rd = sample_reflect(rays[i, j, k].rd, record.normal, record.material)
                 rays_next[i, j, k].l = rays[i, j, k].l * F0
@@ -200,7 +200,7 @@ def propagate_once(rays: ti.template(), rays_next: ti.template()):
                 F0 = cal_reflectivity_dielectirc(rays[i, j, k].rd, record.normal, record.material)
                 if ti.random(ti.f32) > F0:
                     rays_next[i, j, k].rd = sample_diffuse(record.normal)
-                    rays_next[i, j, k].l = rays[i, j, k].l * record.material.color * record.material.absorptivity
+                    rays_next[i, j, k].l = rays[i, j, k].l * record.material.albedo * record.material.absorptivity
                 else:
                     rays_next[i, j, k].rd = sample_reflect(rays[i, j, k].rd, record.normal, record.material)
                     rays_next[i, j, k].l = rays[i, j, k].l
@@ -230,10 +230,10 @@ camera = Camera(resolution)
 camera.set_direction(0, 0)
 camera.set_fov(45)
 camera.set_position(Vec3f([0, -0.5, 4]))
-sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(color=Vec3f([0.5, 0.5, 1]), roughness=1, metalness=0, ior=1.5, absorptivity=0.5))
-sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(color=Vec3f([0.5, 1, 0.5]), roughness=0, metalness=1, ior=1.5, absorptivity=0.5))
-sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(color=Vec3f([1, 0.5, 0.5]), roughness=0.25, metalness=1, ior=1.5, absorptivity=0.5))
-ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, material=Material(color=Vec3f([0.5, 0.5, 0.5]), roughness=0.2, metalness=1, ior=1.5, absorptivity=0.5))
+sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 0.5, 1]), roughness=1, metallic=0, ior=1.5, absorptivity=0.5))
+sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 1, 0.5]), roughness=0, metallic=1, ior=1.5, absorptivity=0.5))
+sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([1, 0.5, 0.5]), roughness=0.25, metallic=1, ior=1.5, absorptivity=0.5))
+ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, material=Material(albedo=Vec3f([0.5, 0.5, 0.5]), roughness=0.2, metallic=1, ior=1.5, absorptivity=0.5))
 world = World([sphere1, sphere2, sphere3, ground])
 import time
 start_time = time.time()
