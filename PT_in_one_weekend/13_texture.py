@@ -633,7 +633,7 @@ def test_aabb(rays: ti.template()):
 
 
 load_texture([
-    {'file_path': './textures/soft-blanket', 'area': TextureArea(low=Vec2i([0, 0]), high=Vec2i([2048, 2048]))}
+    {'file_path': './textures/sandyground1', 'area': TextureArea(low=Vec2i([0, 0]), high=Vec2i([2048, 2048]))}
 ])
 
 load_environment([

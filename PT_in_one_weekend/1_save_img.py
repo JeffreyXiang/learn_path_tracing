@@ -4,12 +4,13 @@ import taichi as ti
 
 ti.init(arch=ti.cpu)
 
-image = ti.Vector.field(n=3, dtype=ti.f32, shape=(512, 512))
+image = ti.Vector.field(n=3, dtype=ti.f32, shape=(256, 256))
 
 @ti.kernel
 def render():
     for i, j in image:
-        image[i, j] = ti.Vector([i / 512, j / 512, 0.25])
+        t = j / 255.0
+        image[i, j] = t * ti.Vector([0.3, 0.5, 0.9]) + (1 - t) * ti.Vector([0.8, 0.9, 1.0])
 
 
 render()

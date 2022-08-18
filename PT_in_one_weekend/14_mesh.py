@@ -33,17 +33,18 @@ AABB = ti.types.struct(low=Vec3f, high=Vec3f)
 
 BVHNode = ti.types.struct(left=ti.i32, right=ti.i32, aabb=AABB, data=ti.i32)
 
-resolution = (600, 400)
+resolution = (3000, 2000)
 texture_size = (2048 * 5, 2048)
 texture_maxnum = 32
 environment_size = (2048, 1024)
 environment_maxnum = 32
 spp = 8192
-batch = 128
-propagate_limit = 10
-epsilon = 1e-8
+batch = 8
+propagate_limit = 4
+epsilon = 1e-4
 
 image = Vec3f.field()
+frame = Vec3f.field()
 rays = Ray.field()
 hits = HitRecord.field()
 textures = Texture.field()
@@ -51,6 +52,7 @@ textures_info = TextureArea.field()
 environments = Vec3f.field()
 environments_info = TextureArea.field()
 ti.root.dense(ti.ij, resolution).place(image)
+ti.root.dense(ti.ij, resolution).place(frame)
 ti.root.bitmasked(ti.ijk, (*resolution, 1)).bitmasked(ti.k, batch).place(rays)
 ti.root.bitmasked(ti.ijk, (*resolution, 1)).bitmasked(ti.k, batch).place(hits)
 ti.root.dense(ti.ij, texture_size).place(textures)
@@ -127,13 +129,14 @@ def load_environment(config):
     environments.from_numpy(envs)
 
 
-def load_obj(file_path, texture_start_id, flip_textcoord=False):
+def load_obj(file_path, texture_start_id, flip_z=False, flip_textcoord=False, transform=None):
     dir_path = os.path.dirname(file_path)
     positions = []
     normals = []
     texture_coords = []
     indices = []
-    textures = dict()
+    textures = []
+    textures_name = dict()
     usemtl = None
     with open(file_path, 'r') as obj:
         lines = obj.readlines()
@@ -158,18 +161,34 @@ def load_obj(file_path, texture_start_id, flip_textcoord=False):
                     mtl_name = mtl_line[1]
                 elif mtl_line[0] == 'map_Kd':
                     mtl_filepath = os.path.join(dir_path, mtl_line[1])
-                    textures[mtl_name] = {'file_path': mtl_filepath, 'id': texture_start_id}
-                    texture_start_id += 1
+                    for i, texture in enumerate(textures):
+                        if texture['file_path'] == mtl_filepath:
+                            textures_name[mtl_name] = i
+                            break
+                    else:
+                        textures_name[mtl_name] = len(textures)
+                        textures.append({'file_path': mtl_filepath, 'id': texture_start_id})
+                        texture_start_id += 1
         elif line[0] == 'v':
-            positions.append(Vec3f([float(line[1]), float(line[2]), float(line[3])]))
+            p = Vec3f([float(line[1]), float(line[2]), float(line[3])])
+            if flip_z:
+                p[2] = -p[2]
+            if transform is not None:
+                p = transform @ p
+            positions.append(p)
         elif line[0] == 'vn':
-            normals.append(Vec3f([float(line[1]), float(line[2]), float(line[3])]))
+            n = Vec3f([float(line[1]), float(line[2]), float(line[3])])
+            if flip_z:
+                n[2] = -n[2]
+            if transform is not None:
+                n = transform @ n
+            normals.append(n)
         elif line[0] == 'vt':
-            u = float(line[1])
-            v = float(line[2])
+            np.UFUNC_PYVALS_NAME = float(line[1])
+            uv = Vec2f([float(line[1]), float(line[2])])
             if flip_textcoord:
-                v = 1- v
-            texture_coords.append(Vec2f([u, v]))
+                uv[1] = 1 - uv[1]
+            texture_coords.append(uv)
         elif line[0] == 'usemtl':
             usemtl = line[1]
         elif line[0] == 'f':
@@ -179,9 +198,9 @@ def load_obj(file_path, texture_start_id, flip_textcoord=False):
                 a=FaceVertex(p=int(line[1][0]) - 1, n=int(line[1][2]) - 1, t=int(line[1][1]) - 1),
                 b=FaceVertex(p=int(line[2][0]) - 1, n=int(line[2][2]) - 1, t=int(line[2][1]) - 1),
                 c=FaceVertex(p=int(line[3][0]) - 1, n=int(line[3][2]) - 1, t=int(line[3][1]) - 1),
-                texture_id = textures[usemtl]['id']
+                texture_id = textures[textures_name[usemtl]]['id']
             ))
-    return positions, normals, texture_coords, indices, list(textures.values())
+    return positions, normals, texture_coords, indices, textures
 
 
 @ti.func
@@ -850,19 +869,19 @@ def triangle_hit(object, ray):
         if hit:
             record.t = t
             record.point = P
-            # N = (w1 * object.a.n + w2 * object.b.n + w3 * object.c.n).normalized()
+            N = (w1 * object.a.n + w2 * object.b.n + w3 * object.c.n).normalized()
             du1 = object.b.t[0] - object.a.t[0]
             du2 = object.c.t[0] - object.a.t[0]
             dv1 = object.b.t[1] - object.a.t[1]
             dv2 = object.c.t[1] - object.a.t[1]
-            T = (dv1 * (p3 - p1) - dv2 * (p2 - p1)) / (dv1 * du2 - dv2 * du1 + epsilon)
+            T = (dv1 * (p3 - p1) - dv2 * (p2 - p1))
             T = (T - T.dot(N) * N).normalized()
             B = T.cross(N)
             u = w1 * object.a.t[0] + w2 * object.b.t[0] + w3 * object.c.t[0]
             v = w1 * object.a.t[1] + w2 * object.b.t[1] + w3 * object.c.t[1]
             texture = bilinear(textures, textures_info, object.texture_id, u, v)
             N_coord = texture.normal
-            record.normal = (N_coord[0] * T + N_coord[1] * B + N_coord[2] * N).normalized()
+            record.normal = N#(N_coord[0] * T + N_coord[1] * B + N_coord[2] * N).normalized()
             record.material.albedo = texture.albedo
             record.material.roughness = texture.roughness
             record.material.metallic = texture.metallic
@@ -934,22 +953,26 @@ def gen_secondary_rays(rays: ti.template(), hits: ti.template()):
 
 
 @ti.kernel
-def gamma_correction():
+def gamma_correction(spp: ti.i32):
     for i, j in image:
-        image[i, j] = (image[i, j] / spp)**(1/2.2)
+        frame[i, j] = (image[i, j] / spp)**(1/2.2)
 
 
-def render():
-    global rays, hits
-    image.fill(0)
+def render(moved=True):
+    if not hasattr(render, 'spp'):
+        render.spp = 0
+    if moved:
+        image.fill(0)
+        render.spp = 0
+    render.spp += spp
     for _ in trange(spp // batch):
-        camera.get_rays_fast(rays)
+        camera.get_rays(rays)
         for i in range(propagate_limit):
             hits.snode.parent(2).deactivate_all()
             propagate_once(rays, hits)
             rays.snode.parent(2).deactivate_all()
             gen_secondary_rays(rays, hits)
-    gamma_correction()
+    gamma_correction(render.spp)
 
 
 @ti.kernel
@@ -961,15 +984,15 @@ def test_aabb(rays: ti.template()):
             image[i, j] += Vec3f([1,1,1]) / spp
 
 
-load_texture([
-    {'file_path': './textures/granite-gray-white', 'area': TextureArea(low=Vec2i([0, 0]), high=Vec2i([2048, 2048])), 'id': 0}
-])
+# load_texture([
+#     {'file_path': './textures/granite-gray-white', 'area': TextureArea(low=Vec2i([0, 0]), high=Vec2i([2048, 2048])), 'id': 0}
+# ])
 
 load_environment([
     {'file_path': './textures/cayley_interior_2k.exr', 'area': TextureArea(low=Vec2i([0, 0]), high=Vec2i([2048, 1024])), 'id': 0}
 ])
 
-positions, normals, texture_coords, indices, materials = load_obj('./models/Yoimiya_model/Yoimiya.obj', 0, flip_textcoord=True)
+positions, normals, texture_coords, indices, materials = load_obj('./models/Yoimiya/Yoimiya_ShapeChange.obj', 0, flip_z=True, flip_textcoord=True, transform=rotate(np.pi, 0))
 texture_configs = []
 for i, material in enumerate(materials):
     texture_configs.append({'file_path': material['file_path'], 'area': TextureArea(low=Vec2i([i * 2048, 0]), high=Vec2i([(i + 1) * 2048, 2048])), 'id': material['id']})
@@ -978,8 +1001,8 @@ load_texture(texture_configs)
 camera = Camera(resolution)
 camera.set_fov(30)
 # camera.set_len(10, 0.1)
-camera.set_position(Vec3f([0, 10, -30]))
-camera.look_at(Vec3f([0, 10, 0]))
+camera.set_position(Vec3f([0, 8, -30]))
+camera.look_at(Vec3f([0, 8, 0]))
 world = World()
 # sphere = Sphere(center=Vec3f([0, 0, 0]), radius=1, transparency=0, texture_id=0)
 # positions = [Vec3f([0, -1, 1]), Vec3f([0, -1, -1]), Vec3f([0, 1, -1]), Vec3f([0, 1, 1])]
@@ -993,11 +1016,11 @@ world = World()
 # world.add_mesh(positions, normals, texture_coords, indices)
 # world.set_environment(0)
 # world.build()
-# world.save('Yoimiya.world.npy')
-world.load('Yoimiya.world.npy')
+# world.save('Ganyu.world.npy')
+world.load('Yoimiya_ShapeChange.world.npy')
 
 render()
-ti.imwrite(image, '14_mesh.png')
+ti.imwrite(frame, '14_mesh.png')
 
 # t_base = time.time()
 # t_last = t_base
@@ -1009,23 +1032,31 @@ ti.imwrite(image, '14_mesh.png')
 #         gui.running = False
 #     t = time.time() - t_base
 #     dt = t - t_last
+#     moved = False
 #     if gui.is_pressed('w'):
 #         camera.move_front(velocity * dt)
+#         moved = True
 #     elif gui.is_pressed('s'):
 #         camera.move_front(-velocity * dt)
+#         moved = True
 #     if gui.is_pressed('a'):
 #         camera.move_right(-velocity * dt)
+#         moved = True
 #     elif gui.is_pressed('d'):
 #         camera.move_right(velocity * dt)
+#         moved = True
 #     if gui.is_pressed(ti.GUI.SPACE):
 #         camera.move_up(velocity * dt)
+#         moved = True
 #     elif gui.is_pressed(ti.GUI.SHIFT):
 #         camera.move_up(-velocity * dt)
+#         moved = True
 #     mouse = gui.get_cursor_pos()
 #     if gui.is_pressed(ti.GUI.LMB):
 #         camera.rotate(mouse[0] - mouse_last[0], -mouse[1] + mouse_last[1])
-#     render()
-#     gui.set_image(image)
+#         moved = True
+#     render(moved)
+#     gui.set_image(frame)
 #     gui.show()
 #     t_last = t
 #     mouse_last = mouse
