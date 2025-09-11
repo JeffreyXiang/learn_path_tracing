@@ -2,8 +2,7 @@ import os
 import numpy as np
 import taichi as ti
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '7'
-ti.init(device_memory_GB=8, use_unified_memory=False, arch=ti.gpu)
+ti.init(device_memory_GB=8, arch=ti.gpu)
 
 Vec3f = ti.types.vector(3, float)
 Mat3f = ti.types.matrix(3, 3, float)
@@ -116,7 +115,6 @@ class Camera:
     def set_fov(self, fov):
         self.fov = float(fov)
         
-    @staticmethod
     @ti.kernel
     def get_rays(self, rays: ti.template()):
         width = self.resolution[0]
@@ -239,4 +237,4 @@ import time
 start_time = time.time()
 render()
 print("time elapsed: {:.2f}s".format(time.time() - start_time))
-ti.imwrite(image, '7_reflect.png')
+ti.tools.imwrite(image, '7_reflect.png')

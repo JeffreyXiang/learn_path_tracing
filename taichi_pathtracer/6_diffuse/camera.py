@@ -1,22 +1,12 @@
-import os
-import numpy as np
 import taichi as ti
-
-ti.init(arch=ti.cpu)
-
-Vec3f = ti.types.vector(3, float)
-Mat3f = ti.types.matrix(3, 3, float)
-Ray = ti.types.struct(ro=Vec3f, rd=Vec3f)
-
-resolution = (400, 225)
-image = Vec3f.field(shape=resolution)
+from dtypes import Vec3f, Mat3f
 
 
 @ti.func
 def rotate(yaw, pitch, roll=0):
-    yaw = yaw * np.pi / 180
-    pitch = pitch * np.pi / 180
-    roll = roll * np.pi / 180
+    yaw = ti.math.radians(yaw)
+    pitch = ti.math.radians(pitch)
+    roll = ti.math.radians(roll)
     yaw_trans = Mat3f([
         [ ti.cos(yaw), 0, ti.sin(yaw)],
         [           0, 1,           0],
@@ -44,7 +34,6 @@ class Camera:
         self.yaw = 0.0
         self.pitch = 0.0
         self.roll = 0.0
-        self.rays = Ray.field(shape=resolution)
 
     def set_position(self, position):
         self.position = position
@@ -58,7 +47,7 @@ class Camera:
         self.fov =fov
 
     @ti.kernel
-    def get_rays(self):
+    def get_rays(self, rays: ti.template()):
         width = self.resolution[0]
         height = self.resolution[1]
         x = self.position[0]
@@ -67,31 +56,14 @@ class Camera:
 
         trans = rotate(self.yaw, self.pitch, self.roll)
         ratio = height / width
-        view_width = 2 * ti.tan(self.fov * np.pi / 180)
+        view_width = 2 * ti.tan(ti.math.radians(self.fov) / 2)
         view_height = view_width * ratio
         direction = trans @ Vec3f([0.0, 0.0, -1.0])
         width_axis = trans @ Vec3f([view_width, 0.0, 0.0])
         height_axis = trans @ Vec3f([0.0, view_height, 0.0])
         
-        for i, j in self.rays:
-            self.rays[i, j].ro = [x, y, z]
-            self.rays[i, j].rd = (direction + (i / (width - 1) - 0.5) * width_axis + (j / (height - 1) - 0.5) * height_axis).normalized()
-
-
-@ti.func
-def ray_color(ray):
-    t = 0.5*(ray.rd[1] + 1.0)
-    return (1.0-t)*Vec3f([1.0, 1.0, 1.0]) + t*Vec3f([0.5, 0.7, 1.0])
-
-
-@ti.kernel
-def render(rays: ti.template()):
-    for i, j in image:
-        image[i, j] = ray_color(rays[i, j])
-
-
-camera = Camera(resolution)
-camera.set_direction(0, 30, 0)
-camera.get_rays()
-render(camera.rays)
-ti.tools.imwrite(image, '2_camera_and_ray.png')
+        for i, j in rays:
+            rays[i, j].ro = [x, y, z]
+            rays[i, j].rd = (direction + ((i + ti.random(ti.f32)) / width - 0.5) * width_axis + ((j + ti.random(ti.f32)) / height - 0.5) * height_axis).normalized()
+            rays[i, j].l = Vec3f([1.0, 1.0, 1.0])
+            

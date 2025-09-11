@@ -195,7 +195,7 @@ class World:
         return res
 
 
-@ti.data_oriented
+@ti.dataclass
 class Sphere:
     def __init__(self, center, radius, material):
         self.center = center

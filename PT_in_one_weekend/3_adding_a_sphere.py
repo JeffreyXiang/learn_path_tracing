@@ -34,6 +34,7 @@ def rotate(yaw, pitch, roll=0):
     ])
     return yaw_trans @ pitch_trans @ roll_trans
 
+
 @ti.data_oriented
 class Camera:
     def __init__(self, resolution, fov=60):
@@ -56,7 +57,6 @@ class Camera:
     def set_fov(self, fov):
         self.fov =fov
         
-    @staticmethod
     @ti.kernel
     def get_rays(self):
         width = self.resolution[0]

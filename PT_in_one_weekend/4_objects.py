@@ -84,6 +84,9 @@ class Camera:
 class World:
     def __init__(self, objects=[]):
         self.objects = objects
+    
+    def add(self, object):
+        self.objects.append(object)
 
     @ti.func
     def hit(self, ray):
@@ -91,7 +94,7 @@ class World:
         res.t = -1
         for i in ti.static(range(len(self.objects))):
             record = self.objects[i].hit(ray)
-            if record.t >= 0 and (res.t < 0 or record.t < res.t): res = record
+            if record.t >= 1e-4 and (res.t < 0 or record.t < res.t): res = record
         return res
 
 
