@@ -35,7 +35,7 @@ class World:
 class Sphere:
     center: Vec3f
     radius: ti.f32
-    color: Vec3f
+    albedo: Vec3f
 
     @ti.func
     def hit(self, ray):
@@ -50,5 +50,5 @@ class Sphere:
             record.t = (-b - ti.sqrt(discriminant)) / (2.0 * a)
             record.point = ray.ro + record.t * ray.rd
             record.normal = (record.point - self.center).normalized()
-            record.albedo = self.color
+            record.albedo = self.albedo
         return record

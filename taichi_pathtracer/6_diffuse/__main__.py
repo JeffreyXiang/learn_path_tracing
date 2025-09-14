@@ -5,6 +5,7 @@ from dtypes import Vec3f, Ray
 from camera import Camera
 from world import World, Sphere
 from bsdf import DiffuseBSDF
+from postprocessing import ACES_tonemapping, gamma_correction
 
 
 ti.init(arch=ti.gpu)
@@ -47,25 +48,30 @@ def shader(world: ti.template(), rays: ti.template()):
 
 
 @ti.kernel
-def gamma_correction():
+def post_processing():
     for i, j in image:
-        image[i, j] = image[i, j]**(1/2.2)
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
 
 
 def render(world: World, camera: Camera):
     for _ in trange(spp):
         camera.get_rays(rays)
         shader(world, rays)
-    gamma_correction()
+    post_processing()
 
 
 camera = Camera(resolution)
 camera.set_direction(0, 0)
-camera.set_position(Vec3f([0, 0, 3]))
+camera.set_position(Vec3f([0, 0, 4]))
 
-sphere = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, Vec3f([0.5, 0.5, 0.5]))
-ground = Sphere(Vec3f([0,-100.5,0]), 100, Vec3f([0.5, 0.5, 0.5]))
-world = World([sphere, ground])
+sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, Vec3f([0.25, 0.25, 0.5]))
+sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, Vec3f([0.25, 0.5, 0.25]))
+sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, Vec3f([0.5, 0.25, 0.25]))
+ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, Vec3f([0.25, 0.25, 0.25]))
+world = World([sphere1, sphere2, sphere3, ground])
 
 start_time = time.time()
 render(world, camera)

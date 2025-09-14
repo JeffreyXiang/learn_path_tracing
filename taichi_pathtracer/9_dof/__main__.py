@@ -5,6 +5,7 @@ from dtypes import Vec3f, Ray, Material
 from camera import Camera
 from world import World, Sphere
 from bsdf import MetalBSDF, DielectricBSDF
+from postprocessing import ACES_tonemapping, gamma_correction
 
 
 ti.init(arch=ti.gpu)
@@ -50,29 +51,32 @@ def shader(world: ti.template(), rays: ti.template()):
 
 
 @ti.kernel
-def gamma_correction():
+def post_processing():
     for i, j in image:
-        image[i, j] = image[i, j]**(1/2.2)
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
 
 
 def render(world: World, camera: Camera):
     for _ in trange(spp):
         camera.get_rays(rays)
         shader(world, rays)
-    gamma_correction()
+    post_processing()
 
 
 camera = Camera(resolution)
 camera.set_position(Vec3f([3, 0.5, 2]))
-camera.look_at(Vec3f([0.0,0.0,0.0]))
+camera.look_at(Vec3f([0.0,0.35,0.0]))
 camera.set_len(focal_length=camera.position.norm(), aperture=0.2)
 
-sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.25, 0.25, 0.5]), roughness=1, metallic=0, ior=1.5, transparency=0))
-sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.25, 0.5, 0.25]), roughness=0, metallic=1, ior=1.5, transparency=0))
-sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 0.25, 0.25]), roughness=0.25, metallic=1, ior=1.5, transparency=0))
+sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.25, 0.25, 0.5]), roughness=0.5, metallic=0, ior=1.5))
+sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.25, 0.5, 0.25]), roughness=0, metallic=1, ior=1.5))
+sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 0.25, 0.25]), roughness=0.5, metallic=1, ior=1.5))
 sphere4 = Sphere(Vec3f([-0.5,0.866,0]), 0.5, material=Material(albedo=Vec3f([1, 1, 1]), roughness=0, metallic=0, ior=1.5, transparency=1))
-sphere5 = Sphere(Vec3f([0.5,0.866,0]), 0.5, material=Material(albedo=Vec3f([0.5, 1, 0.5]), roughness=0.1, metallic=0, ior=1.5, transparency=1))
-ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, material=Material(albedo=Vec3f([0.25, 0.25, 0.25]), roughness=1, metallic=0, ior=1.5))
+sphere5 = Sphere(Vec3f([0.5,0.866,0]), 0.5, material=Material(albedo=Vec3f([0.5, 1, 0.5]), roughness=0.5, metallic=0, ior=1.5, transparency=1))
+ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, material=Material(albedo=Vec3f([0.25, 0.25, 0.25]), roughness=0.5, metallic=0, ior=1.5))
 world = World([sphere1, sphere2, sphere3, sphere4, sphere5, ground])
 
 start_time = time.time()

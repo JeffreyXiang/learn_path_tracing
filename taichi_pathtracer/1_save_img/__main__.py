@@ -3,8 +3,9 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
+Vec3f = ti.types.vector(3, float)
 resolution = (256, 256)
-image = ti.Vector.field(n=3, dtype=ti.f32, shape=resolution)
+image = Vec3f.field(shape=resolution)
 
 @ti.kernel
 def shader():

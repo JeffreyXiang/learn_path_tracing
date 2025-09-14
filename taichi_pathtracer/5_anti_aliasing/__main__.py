@@ -8,7 +8,7 @@ from world import World, Sphere
 
 ti.init(arch=ti.gpu)
 
-resolution = (640, 360)
+resolution = (1280, 720)
 spp = 100
 
 image = Vec3f.field(shape=resolution)

@@ -2,18 +2,20 @@ import os
 import numpy as np
 import taichi as ti
 
-ti.init(device_memory_GB=8, arch=ti.gpu)
+os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+ti.init(device_memory_GB=8, use_unified_memory=False, arch=ti.gpu)
 
 Vec3f = ti.types.vector(3, float)
 Mat3f = ti.types.matrix(3, 3, float)
 Ray = ti.types.struct(ro=Vec3f, rd=Vec3f, l=Vec3f)
-Material = ti.types.struct(albedo=Vec3f, roughness=ti.f32, metallic=ti.i32, ior=ti.f32, absorptivity=ti.f32)
-HitRecord = ti.types.struct(point=Vec3f, normal=Vec3f, t=ti.f32, material=Material)
+Material = ti.types.struct(albedo=Vec3f, roughness=ti.f32, metallic=ti.i32, ior=ti.f32, absorptivity=ti.f32, transparency=ti.i32)
+HitRecord = ti.types.struct(point=Vec3f, normal=Vec3f, dir=ti.i32, t=ti.f32, material=Material)
 
 resolution = (1280, 720)
 spp = 128
 batch = 32
 propagate_limit = 100
+epsilon = 1e-4
 
 image = Vec3f.field(shape=resolution)
 image.fill(0)
@@ -94,6 +96,19 @@ def sample_reflect(dir: ti.template(), normal: ti.template(), material: ti.templ
     return (new_dir + k * material.roughness * s).normalized()
 
 
+@ti.func
+def sample_refract(dir: ti.template(), normal: ti.template(), material: ti.template()):
+    s = sample_in_sphere()
+    k = dir.dot(normal)
+    r_out_perp = (dir - k * normal) / material.ior
+    r_out_perp_len2 = r_out_perp.dot(r_out_perp)
+    if r_out_perp_len2 > 1 : r_out_perp_len2 = 1
+    k = ti.sqrt(1.0 - r_out_perp_len2)
+    r_out_parallel = -k * normal
+    new_dir = r_out_perp + r_out_parallel
+    return (new_dir + k * material.roughness * s).normalized()
+
+
 @ti.data_oriented
 class Camera:
     def __init__(self, resolution, fov=60):
@@ -115,6 +130,7 @@ class Camera:
     def set_fov(self, fov):
         self.fov = float(fov)
         
+    @staticmethod
     @ti.kernel
     def get_rays(self, rays: ti.template()):
         width = self.resolution[0]
@@ -148,7 +164,11 @@ class World:
         res.t = -1
         for i in ti.static(range(len(self.objects))):
             record = self.objects[i].hit(ray)
-            if record.t > 1e-3 and (res.t < 0 or record.t < res.t): res = record
+            if record.t > epsilon and (res.t < 0 or record.t < res.t): res = record
+        if ray.rd.dot(res.normal) > 0:
+            res.normal = -res.normal
+            res.material.ior = 1 / res.material.ior
+            res.material.absorptivity = 0
         return res
 
 
@@ -169,7 +189,10 @@ class Sphere:
         record = HitRecord(0.0)
         record.t = -1
         if discriminant >= 0:
-            record.t = (-b - ti.sqrt(discriminant)) / (2.0 * a)
+            sqrt_discriminant = ti.sqrt(discriminant)
+            record.t = (-b - sqrt_discriminant) / (2.0 * a)
+            if record.t < epsilon and self.material.transparency:
+                record.t = (-b + sqrt_discriminant) / (2.0 * a)
             record.point = ray.ro + record.t * ray.rd
             record.normal = (record.point - self.center).normalized()
             record.material = self.material
@@ -189,7 +212,6 @@ def propagate_once(rays: ti.template(), rays_next: ti.template()):
         color = Vec3f(0.0)
         record = world.hit(rays[i, j, k])
         if record.t >= 0:
-            rays_next[i, j, k].ro = record.point
             if record.material.metallic:
                 F0 = cal_reflectivity_metal(rays[i, j, k].rd, record.normal, record.material)
                 rays_next[i, j, k].rd = sample_reflect(rays[i, j, k].rd, record.normal, record.material)
@@ -197,20 +219,28 @@ def propagate_once(rays: ti.template(), rays_next: ti.template()):
             else:
                 F0 = cal_reflectivity_dielectirc(rays[i, j, k].rd, record.normal, record.material)
                 if ti.random(ti.f32) > F0:
-                    rays_next[i, j, k].rd = sample_diffuse(record.normal)
-                    rays_next[i, j, k].l = rays[i, j, k].l * record.material.albedo * record.material.absorptivity
+                    if record.material.transparency:
+                        rays_next[i, j, k].rd = sample_refract(rays[i, j, k].rd, record.normal, record.material)
+                        rays_next[i, j, k].l = rays[i, j, k].l * record.material.albedo * (1 - record.material.absorptivity)
+                    else:
+                        rays_next[i, j, k].rd = sample_diffuse(record.normal)
+                        rays_next[i, j, k].l = rays[i, j, k].l * record.material.albedo * (1 - record.material.absorptivity)
                 else:
                     rays_next[i, j, k].rd = sample_reflect(rays[i, j, k].rd, record.normal, record.material)
                     rays_next[i, j, k].l = rays[i, j, k].l
+            rays_next[i, j, k].ro = record.point + rays_next[i, j, k].rd * 2 * epsilon
         else:
             color = backbround_color(rays[i, j, k])
         image[i, j] += color * rays[i, j, k].l / spp
 
 
 @ti.kernel
-def gamma_correction():
+def post_processing():
     for i, j in image:
-        image[i, j] = image[i, j]**(1/2.2)
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
 
 
 def render():
@@ -227,14 +257,16 @@ def render():
 camera = Camera(resolution)
 camera.set_direction(0, 0)
 camera.set_fov(45)
-camera.set_position(Vec3f([0, -0.5, 4]))
-sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 0.5, 1]), roughness=1, metallic=0, ior=1.5, absorptivity=0.5))
-sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 1, 0.5]), roughness=0, metallic=1, ior=1.5, absorptivity=0.5))
-sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([1, 0.5, 0.5]), roughness=0.25, metallic=1, ior=1.5, absorptivity=0.5))
-ground = Sphere(Vec3f([0,-10000.5,0.0]), 10000, material=Material(albedo=Vec3f([0.5, 0.5, 0.5]), roughness=0.2, metallic=1, ior=1.5, absorptivity=0.5))
-world = World([sphere1, sphere2, sphere3, ground])
+camera.set_position(Vec3f([0, 0.4, 2.5]))
+sphere1 = Sphere(Vec3f([0.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.5, 0.5, 1]), roughness=1, metallic=0, ior=1.5, absorptivity=0.5, transparency=0))
+sphere2 = Sphere(Vec3f([-1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([1, 0.782, 0.423]), roughness=0, metallic=1, ior=0, absorptivity=0, transparency=0))
+sphere3 = Sphere(Vec3f([1.0,0.0,0.0]), 0.5, material=Material(albedo=Vec3f([0.955, 0.638, 0.538]), roughness=0.25, metallic=1, ior=0, absorptivity=0, transparency=0))
+sphere4 = Sphere(Vec3f([-0.5,0.866,0]), 0.5, material=Material(albedo=Vec3f([1, 1, 1]), roughness=0, metallic=0, ior=1.5, absorptivity=0, transparency=1))
+sphere5 = Sphere(Vec3f([0.5,0.866,0]), 0.5, material=Material(albedo=Vec3f([0.5, 1, 0.5]), roughness=0.1, metallic=0, ior=1.5, absorptivity=0.2, transparency=1))
+ground = Sphere(Vec3f([0,-100.5,0.0]), 100, material=Material(albedo=Vec3f([1, 1, 1]), roughness=1, metallic=0, ior=1.5, absorptivity=0.5, transparency=0))
+world = World([sphere1, sphere2, sphere3, sphere4, sphere5, ground])
 import time
 start_time = time.time()
 render()
 print("time elapsed: {:.2f}s".format(time.time() - start_time))
-ti.tools.imwrite(image, '7_reflect.png')
+ti.imwrite(image, '8_refract.png')

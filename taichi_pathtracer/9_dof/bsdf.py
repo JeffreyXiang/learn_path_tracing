@@ -13,41 +13,50 @@ def _sample_at_sphere():
 
 
 @ti.func
-def _sample_in_sphere():
-    r = ti.random(ti.f32)**(1.0 / 3.0)
-    theta = 2 * ti.math.pi * ti.random(ti.f32)
-    phi = ti.acos(ti.random(ti.f32) * 2 - 1)
-    x = r * ti.cos(theta) * ti.sin(phi)
-    y = r * ti.sin(theta) * ti.sin(phi)
-    z = r * ti.cos(phi)
-    return Vec3f([x, y, z])
-
-
-@ti.func
 def _sample_lambertian(normal):
     s = _sample_at_sphere()
     return (normal + s).normalized()
 
 
 @ti.func
-def _sample_reflect(dir, normal, roughness):
-    s = _sample_in_sphere()
-    k = -dir.dot(normal)
-    new_dir = dir + 2 * k * normal
-    return (new_dir + k * roughness * s).normalized()
+def _slerp(a, b, t):
+    omega = ti.acos(ti.math.clamp(a.dot(b), -1, 1))
+    so = ti.sin(omega)
+    o = (1 - t) * a + t * b if so < 1e-6 else \
+        (ti.sin((1 - t) * omega) / so) * a + (ti.sin(t * omega) / so) * b
+    return o.normalized()
 
 
 @ti.func
-def _sample_refract(dir, normal, roughness, ior):
-    s = _sample_in_sphere()
+def _sample_normal(dir, normal, roughness):
+    s = _sample_lambertian(normal)
+    k = -dir.dot(normal)
+    r = dir + 2 * k * normal
+    r = _slerp(r, s, roughness*roughness)
+    n = (r - dir).normalized()
+    return n
+
+
+@ti.func
+def _reflect(dir, normal):
+    k = -dir.dot(normal)
+    r = dir + 2 * k * normal
+    return r
+
+
+@ti.func
+def _refract(dir, normal, ior):
     k = dir.dot(normal)
     r_out_perp = (dir - k * normal) / ior
     r_out_perp_len2 = r_out_perp.dot(r_out_perp)
-    if r_out_perp_len2 > 1 : r_out_perp_len2 = 1
-    k = ti.sqrt(1.0 - r_out_perp_len2)
-    r_out_parallel = -k * normal
-    new_dir = r_out_perp + r_out_parallel
-    return (new_dir + k * roughness * s).normalized()
+    r = Vec3f(0)
+    if r_out_perp_len2 > 1:
+        r = _reflect(dir, normal)
+    else:
+        k = ti.sqrt(1.0 - r_out_perp_len2)
+        r_out_parallel = -k * normal
+        r = r_out_perp + r_out_parallel
+    return r
 
 
 class DiffuseBSDF:
@@ -70,10 +79,11 @@ class MetalBSDF:
     @staticmethod
     @ti.func
     def sample(ray: ti.template(), hit: ti.template()):
-        F = MetalBSDF.cal_fresnel(ray.rd, hit.normal, hit.material.albedo)
+        n = _sample_normal(ray.rd, hit.normal, hit.material.roughness)
+        F = MetalBSDF.cal_fresnel(ray.rd, n, hit.material.albedo)
         ray.l *= F
         ray.ro = hit.point
-        ray.rd = _sample_reflect(ray.rd, hit.normal, hit.material.roughness)
+        ray.rd = _reflect(ray.rd, n)
 
 
 class DielectricBSDF:
@@ -87,13 +97,14 @@ class DielectricBSDF:
     @staticmethod
     @ti.func
     def sample(ray: ti.template(), hit: ti.template()):
-        F = DielectricBSDF.cal_fresnel(ray.rd, hit.normal, hit.material.ior)
+        n = _sample_normal(ray.rd, hit.normal, hit.material.roughness)
+        F = DielectricBSDF.cal_fresnel(ray.rd, n, hit.material.ior)
         ray.ro = hit.point
         if ti.random() > F:
             ray.l *= hit.material.albedo
             if hit.material.transparency:
-                ray.rd = _sample_refract(ray.rd, hit.normal, hit.material.roughness, hit.material.ior)
+                ray.rd = _refract(ray.rd, n, hit.material.ior)
             else:
                 ray.rd = _sample_lambertian(hit.normal)
         else:
-            ray.rd = _sample_reflect(ray.rd, hit.normal, hit.material.roughness)
+            ray.rd = _reflect(ray.rd, n)

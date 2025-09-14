@@ -6,12 +6,13 @@ from dtypes import Vec3f, Ray, Material
 from camera import Camera
 from world import World, Sphere
 from bsdf import MetalBSDF, DielectricBSDF
+from postprocessing import ACES_tonemapping, gamma_correction
 
 
-def random_scene(size=8):
+def random_scene(size=11):
     world = World()
 
-    ground = Sphere(Vec3f([0,-10000,0]), 10000, material=Material(albedo=Vec3f([0.25, 0.25, 0.25]), roughness=1, metallic=0, ior=1.5, transparency=0))
+    ground = Sphere(Vec3f([0,-10000,0]), 10000, material=Material(albedo=Vec3f([0.25, 0.25, 0.25]), roughness=0.5, metallic=0, ior=1.5, transparency=0))
     world.add(ground)
 
     for a in range(-size, size):
@@ -23,7 +24,7 @@ def random_scene(size=8):
                 albedo = Vec3f([random.random(), random.random(), random.random()])
                 if choose_mat < 0.8:
                     # diffuse
-                    sphere = Sphere(center, 0.2, material=Material(albedo=albedo, roughness=1, metallic=0, ior=1.5, transparency=0))
+                    sphere = Sphere(center, 0.2, material=Material(albedo=albedo, roughness=random.random(), metallic=0, ior=1.5, transparency=0))
                     world.add(sphere)
                 elif choose_mat < 0.95:
                     # metal
@@ -36,7 +37,7 @@ def random_scene(size=8):
 
     sphere = Sphere(Vec3f([0, 1, 0]), 1.0, material=Material(albedo=Vec3f([1, 1, 1]), roughness=0, metallic=0, ior=1.5, transparency=1))
     world.add(sphere)
-    sphere = Sphere(Vec3f([-4, 1, 0]), 1.0, material=Material(albedo=Vec3f([0.4, 0.2, 0.1]), roughness=1, metallic=0, ior=1.5, transparency=0))
+    sphere = Sphere(Vec3f([-4, 1, 0]), 1.0, material=Material(albedo=Vec3f([0.4, 0.2, 0.1]), roughness=0.5, metallic=0, ior=1.5, transparency=0))
     world.add(sphere)
     sphere = Sphere(Vec3f([4, 1, 0]), 1.0, material=Material(albedo=Vec3f([0.7, 0.6, 0.5]), roughness=0, metallic=1, ior=0, transparency=0))
     world.add(sphere)
@@ -87,16 +88,19 @@ def shader(world: ti.template(), rays: ti.template()):
 
 
 @ti.kernel
-def gamma_correction():
+def post_processing():
     for i, j in image:
-        image[i, j] = image[i, j]**(1/2.2)
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
 
 
 def render(world: World, camera: Camera):
     for _ in trange(spp):
         camera.get_rays(rays)
         shader(world, rays)
-    gamma_correction()
+    post_processing()
 
 
 camera = Camera(resolution)

@@ -1,10 +1,9 @@
 import os
-import time
 import numpy as np
 import taichi as ti
 from tqdm import trange 
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 ti.init(device_memory_GB=8, use_unified_memory=False, arch=ti.gpu)
 
 INF = 114514114514
@@ -13,19 +12,16 @@ Vec2i = ti.types.vector(2, ti.i32)
 Vec2f = ti.types.vector(2, ti.f32)
 Vec3f = ti.types.vector(3, ti.f32)
 Mat3f = ti.types.matrix(3, 3, ti.f32)
-
 Ray = ti.types.struct(ro=Vec3f, rd=Vec3f, l=Vec3f)
 Material = ti.types.struct(albedo=Vec3f, roughness=ti.f32, metallic=ti.i32, ior=ti.f32, absorptivity=ti.f32, transparency=ti.i32)
 HitRecord = ti.types.struct(point=Vec3f, normal=Vec3f, dir=ti.i32, t=ti.f32, material=Material)
-
 Sphere = ti.types.struct(center=Vec3f, radius=ti.f32, material=Material)
 AABB = ti.types.struct(low=Vec3f, high=Vec3f)
-
 BVHNode = ti.types.struct(left=ti.i32, right=ti.i32, aabb=AABB, data=ti.i32)
 
 resolution = (640, 360)
-spp = 128
-batch = 128
+spp = 8
+batch = 8
 propagate_limit = 10
 epsilon = 1e-4
 
@@ -52,7 +48,7 @@ def array_set(a: ti.template(), i, val):
             a[j] = val
 
 
-@ti.pyfunc
+@ti.func
 def rotate(yaw, pitch, roll=0):
     yaw_trans = Mat3f([
         [ ti.cos(yaw), 0, ti.sin(yaw)],
@@ -149,23 +145,25 @@ class Camera:
         self.focal_length = ti.field(ti.f32, shape=())
         self.aperture = ti.field(ti.f32, shape=())
         self.position = Vec3f.field(shape=())
-        self.front_axis = Vec3f.field(shape=())
-        self.right_axis = Vec3f.field(shape=())
-        self.up_axis = Vec3f.field(shape=())
-
+        self.yaw = ti.field(ti.f32, shape=())
+        self.pitch = ti.field(ti.f32, shape=())
+        self.roll = ti.field(ti.f32, shape=())
         self.resolution[None] = resolution
         self.fov[None] = float(fov)
         self.focal_length[None] = float(focal_length)
         self.aperture[None] = float(aperture)
         self.position[None] = Vec3f(0)
-        self.yaw = 0.0
-        self.pitch = 0.0
-        self.roll = 0.0
-
-        self
+        self.yaw[None] = 0.0
+        self.pitch[None] = 0.0
+        self.roll[None] = 0.0
 
     def set_position(self, position):
         self.position[None] = position
+        
+    def set_direction(self, yaw, pitch, roll=0):
+        self.yaw[None] = float(yaw) * np.pi / 180
+        self.pitch[None] = float(pitch) * np.pi / 180
+        self.roll[None] = float(roll) * np.pi / 180
 
     def set_fov(self, fov):
         self.fov[None] = float(fov)
@@ -174,50 +172,28 @@ class Camera:
         self.focal_length[None] = float(focal_length)
         self.aperture[None] = float(aperture)
 
-    def set_direction(self, yaw, pitch, roll=0):
-        self.yaw = float(yaw) * np.pi / 180
-        self.pitch = float(pitch) * np.pi / 180
-        self.roll = float(roll) * np.pi / 180
-        self.update_coord()
-
     def look_at(self, target, roll=0):
         position = Vec3f([self.position[None][0], self.position[None][1], self.position[None][2]])
         dir = (target - position).normalized()
-        self.yaw = ti.atan2(-dir[0], -dir[2])
-        self.pitch = ti.asin(dir[1])
-        self.roll = float(roll) * np.pi / 180
-        self.update_coord()
-
-    def update_coord(self):
-        trans = rotate(self.yaw, self.pitch, self.roll)
-        self.front_axis[None] = trans @ Vec3f([0.0, 0.0, -1.0])
-        self.right_axis[None] = trans @ Vec3f([1.0, 0.0, 0.0])
-        self.up_axis[None] = trans @ Vec3f([0.0, 1.0, 0.0])
-
-    def move_front(self, d):
-        self.position[None][0] += d * self.front_axis[None][0]
-        self.position[None][1] += d * self.front_axis[None][1]
-        self.position[None][2] += d * self.front_axis[None][2]
-
-    def move_right(self, d):
-        self.position[None][0] += d * self.right_axis[None][0]
-        self.position[None][1] += d * self.right_axis[None][1]
-        self.position[None][2] += d * self.right_axis[None][2]
-
-    def move_up(self, d):
-        self.position[None][1] += d
+        self.yaw[None] = ti.atan2(-dir[0], -dir[2])
+        self.pitch[None] = ti.asin(dir[1])
+        self.roll[None] = float(roll) * np.pi / 180
 
     @ti.kernel
     def get_rays_fast(self, rays: ti.template()):
         width = self.resolution[None][0]
         height = self.resolution[None][1]
 
+        trans = rotate(self.yaw[None], self.pitch[None], self.roll[None])
         ratio = height / width
         view_width = 2 * ti.tan(self.fov[None] * np.pi / 180)
         view_height = view_width * ratio
+        direction = trans @ Vec3f([0.0, 0.0, -1.0])
+        width_axis = trans @ Vec3f([1.0, 0.0, 0.0])
+        height_axis = trans @ Vec3f([0.0, 1.0, 0.0])
         
         for i, j, k in ti.ndrange(width, height, rays.shape[2]):
-            target = self.front_axis[None] + (i / width - 0.5) * view_width * self.right_axis[None] + (j / height - 0.5) * view_height * self.up_axis[None]
+            target = direction + (i / width - 0.5) * view_width * width_axis + (j / height - 0.5) * view_height * height_axis
             rays[i, j, k].ro = self.position[None]
             rays[i, j, k].rd = target.normalized()
             rays[i, j, k].l = Vec3f([1.0, 1.0, 1.0])    
@@ -227,14 +203,18 @@ class Camera:
         width = self.resolution[None][0]
         height = self.resolution[None][1]
 
+        trans = rotate(self.yaw[None], self.pitch[None], self.roll[None])
         ratio = height / width
         view_width = 2 * ti.tan(self.fov[None] * np.pi / 180)
         view_height = view_width * ratio
+        direction = trans @ Vec3f([0.0, 0.0, -1.0])
+        width_axis = trans @ Vec3f([1.0, 0.0, 0.0])
+        height_axis = trans @ Vec3f([0.0, 1.0, 0.0])
         
         for i, j, k in ti.ndrange(width, height, rays.shape[2]):
-            target = self.focal_length[None] * (self.front_axis[None] + ((i + ti.random(ti.f32)) / width - 0.5) * view_width * self.right_axis[None] + ((j + ti.random(ti.f32)) / height - 0.5) * view_height * self.up_axis[None])
+            target = self.focal_length[None] * (direction + ((i + ti.random(ti.f32)) / width - 0.5) * view_width * width_axis + ((j + ti.random(ti.f32)) / height - 0.5) * view_height * height_axis)
             sample = sample_in_disk()
-            origin = self.aperture[None] / 2.0 * (sample[0] * self.right_axis[None] + sample[1] * self.up_axis[None])
+            origin = self.aperture[None] / 2.0 * (sample[0] * width_axis + sample[1] * height_axis)
             rays[i, j, k].ro = self.position[None] + origin
             rays[i, j, k].rd = (target - origin).normalized()
             rays[i, j, k].l = Vec3f([1.0, 1.0, 1.0])
@@ -293,16 +273,15 @@ class BVHTree:
 
         return sorted_objects[min_axis][:min_idx + 1], sorted_objects[min_axis][min_idx + 1:], aabbs[min_axis][min_idx][0], aabbs[min_axis][min_idx][1] 
 
-    def print(self, i=0, depth=0):
-        nodes = self.tree_nodes
-        leaves = self.tree_leaves
+    @staticmethod
+    def print_tree(nodes, leaves, i=0, depth=0):
         if i >= 0:
             if nodes[i].data >= 0:
                 print('  ' * depth, 'AABB: ', nodes[i].aabb, '  OBJS: ', len(leaves[nodes[i].data]))
             else:
                 print('  ' * depth, 'AABB: ', nodes[i].aabb)
-            self.print(nodes[i].left, depth + 1)
-            self.print(nodes[i].right, depth + 1)
+            BVHTree.print_tree(nodes, leaves, nodes[i].left, depth + 1)
+            BVHTree.print_tree(nodes, leaves, nodes[i].right, depth + 1)
 
     def build(self, objects, max_depth=8, max_leave_objects=4):
         self.max_depth = max_depth
@@ -329,8 +308,8 @@ class BVHTree:
                 self.tree_leaves.append(tree[i]['objects'])
             i += 1
 
-        self.print()
-        
+        BVHTree.print_tree(self.tree_nodes, self.tree_leaves)
+
         leaves_num = 0
         for i in range(len(self.tree_leaves)):
             leaves_num += len(self.tree_leaves[i])
@@ -475,9 +454,12 @@ def gen_secondary_rays(rays: ti.template(), hits: ti.template()):
 
 
 @ti.kernel
-def gamma_correction():
+def post_processing():
     for i, j in image:
-        image[i, j] = image[i, j]**(1/2.2)
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
 
 
 def render():
@@ -542,35 +524,12 @@ def random_scene(size=11):
 
 camera = Camera(resolution)
 camera.set_fov(20)
-# camera.set_len(10, 0.1)
-camera.set_position(Vec3f([13, 2, 3]))
-camera.look_at(Vec3f([0, 0, 0]))
+camera.set_len(10, 0.1)
 world = random_scene(11)
-
-t_base = time.time()
-t_last = t_base
-velocity = 5
-
 gui = ti.GUI('SDF Path Tracer', resolution)
-while gui.running:
-    if gui.get_event(ti.GUI.ESCAPE):
-        gui.running = False
-    t = time.time() - t_base
-    dt = t - t_last
-    if gui.is_pressed('w'):
-        camera.move_front(velocity * dt)
-    elif gui.is_pressed('s'):
-        camera.move_front(-velocity * dt)
-    if gui.is_pressed('a'):
-        camera.move_right(-velocity * dt)
-    elif gui.is_pressed('d'):
-        camera.move_right(velocity * dt)
-    if gui.is_pressed(ti.GUI.SPACE):
-        camera.move_up(velocity * dt)
-    elif gui.is_pressed(ti.GUI.SHIFT):
-        camera.move_up(-velocity * dt)
+for i in range(50000):
+    camera.set_position(Vec3f([15 * np.cos(0.1 * i + epsilon), 2, 15 * np.sin(0.1 * i + epsilon)]))
     camera.look_at(Vec3f([0, 0, 0]))
     render()
     gui.set_image(image)
     gui.show()
-    t_last = t
