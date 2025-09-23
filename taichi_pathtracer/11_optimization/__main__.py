@@ -1,0 +1,121 @@
+import time
+import random
+import taichi as ti
+from dtypes import Vec3f, Material
+from camera import Camera
+from primitives import Sphere
+from world import World
+from bsdf import MetalBSDF, DielectricBSDF
+from postprocessing import ACES_tonemapping, gamma_correction
+
+
+def random_scene(size=11):
+    world = World()
+
+    ground = Sphere(Vec3f([0,-10000,0]), 10000, material=Material(albedo=Vec3f([0.25, 0.25, 0.25]), roughness=0.5, metallic=0, ior=1.5, transparency=0))
+    world.add(ground)
+
+    for a in range(-size, size):
+        for b in range(-size, size):
+            choose_mat = random.random()
+            center = Vec3f([a + 0.9 * random.random(), 0.2, b + 0.9 * random.random()])
+
+            if (center - Vec3f([4, 0.2, 0])).norm() > 0.9:
+                albedo = Vec3f([random.random(), random.random(), random.random()])
+                if choose_mat < 0.8:
+                    # diffuse
+                    sphere = Sphere(center, 0.2, material=Material(albedo=albedo, roughness=random.random(), metallic=0, ior=1.5, transparency=0))
+                    world.add(sphere)
+                elif choose_mat < 0.95:
+                    # metal
+                    sphere = Sphere(center, 0.2, material=Material(albedo=0.5+0.5*albedo, roughness=0.5*random.random(), metallic=1, ior=0, transparency=0))
+                    world.add(sphere)
+                else:
+                    # glass
+                    sphere = Sphere(center, 0.2, material=Material(albedo=0.75+0.25*albedo, roughness=0.2*random.random(), metallic=0, ior=1.5, transparency=1))
+                    world.add(sphere)
+
+    sphere = Sphere(Vec3f([0, 1, 0]), 1.0, material=Material(albedo=Vec3f([1, 1, 1]), roughness=0, metallic=0, ior=1.5, transparency=1))
+    world.add(sphere)
+    sphere = Sphere(Vec3f([-4, 1, 0]), 1.0, material=Material(albedo=Vec3f([0.4, 0.2, 0.1]), roughness=0.5, metallic=0, ior=1.5, transparency=0))
+    world.add(sphere)
+    sphere = Sphere(Vec3f([4, 1, 0]), 1.0, material=Material(albedo=Vec3f([0.7, 0.6, 0.5]), roughness=0, metallic=1, ior=0, transparency=0))
+    world.add(sphere)
+
+    return world
+
+
+ti.init(arch=ti.gpu)
+
+resolution = (1280, 720)
+spp = 8192
+batch = 32
+propagate_limit = 32
+
+image = Vec3f.field(shape=resolution)
+
+
+@ti.func
+def backbround_color(ray):
+    t = 0.5*(ray.rd[1] + 1.0)
+    color = (1.0-t)*Vec3f([1.0, 1.0, 1.0]) + t*Vec3f([0.5, 0.7, 1.0])
+    return color
+
+
+@ti.func
+def propagate_once(ray: ti.template(), world: ti.template()):
+    if ray.end == 0:
+        hit, si = world.hit(ray)
+        if hit:
+            if si.metallic == 1:
+                MetalBSDF.sample(ray, si)
+            else:
+                DielectricBSDF.sample(ray, si)
+        else:
+            ray.end = ti.int8(1)
+
+
+@ti.kernel
+def shader(world: ti.template(), camera: ti.template()):
+    for i, j, k in ti.ndrange(resolution[0], resolution[1], spp//batch):
+        c = Vec3f(0.0)
+        for b in range(batch):
+            ray = camera.get_ray(i, j)
+            for _ in range(propagate_limit):
+                propagate_once(ray, world)
+                if ray.end == 1:
+                    break
+            if ray.end == 1:
+                c += backbround_color(ray) * ray.l / spp
+        image[i, j] += c
+
+
+@ti.kernel
+def post_processing():
+    for i, j in image:
+        c = image[i, j]
+        c = ACES_tonemapping(c)
+        c = gamma_correction(c, 2.2)
+        image[i, j] = c
+
+
+def render(world: World, camera: Camera):
+    shader(world, camera)
+    post_processing()
+
+
+camera = Camera(resolution)
+camera.set_position(Vec3f([13, 2, 3]))
+camera.look_at(Vec3f([0, 0, 0]))
+camera.set_fov(40)
+camera.set_len(10, 0.2)
+camera.prepare_render()
+
+world = random_scene()
+
+start_time = time.time()
+render(world, camera)
+ti.sync()
+print(f"Time elapsed: {time.time() - start_time:.2f}s")
+
+ti.tools.imwrite(image, 'outputs/11_optimization.png')
