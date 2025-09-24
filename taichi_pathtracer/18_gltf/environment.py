@@ -26,7 +26,7 @@ class ImageEnvironment:
 
     @ti.func
     def sample(self, ray):
-        u = (ti.math.atan2(ray.rd[0], ray.rd[2]) / (2.0 * ti.math.pi) + 0.5) * self.width
+        u = (ti.math.atan2(ray.rd[2], ray.rd[0]) / (2.0 * ti.math.pi) + 0.5) * self.width
         v = (ti.math.asin(ti.math.clamp(ray.rd[1], -1, 1)) / ti.math.pi + 0.5) * self.height
         l = ti.math.floor(u - 0.5) + 0.5
         r = l + 1.0

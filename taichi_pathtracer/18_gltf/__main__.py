@@ -1,8 +1,5 @@
 import time
-import random
 import imageio
-import numpy as np
-import trimesh
 import taichi as ti
 from dtypes import Vec3f
 from camera import Camera
