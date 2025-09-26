@@ -1,5 +1,5 @@
 import time
-import imageio
+import cv2
 import taichi as ti
 from dtypes import Vec3f
 from camera import Camera
@@ -14,8 +14,8 @@ from material import Material
 ti.init(arch=ti.gpu)
 
 resolution = (3840, 2160)
-spp = 8192
-batch = 32
+spp = 65536
+batch = 256
 propagate_limit = 32
 
 image = Vec3f.field(shape=resolution)
@@ -64,8 +64,6 @@ def shader_bc_vis(world: ti.template(), camera: ti.template()):
             hit, si, vis = world.hit(ray)
             if hit:
                 c += si.albedo / spp
-            else:
-                c += gamma_correction(ACES_tonemapping(world.env.sample(ray)), 2.2) / spp
         image[i, j] += c
 
 
@@ -78,8 +76,6 @@ def shader_m_vis(world: ti.template(), camera: ti.template()):
             hit, si, vis = world.hit(ray)
             if hit:
                 c += Vec3f(si.metallic) / spp
-            else:
-                c += gamma_correction(ACES_tonemapping(world.env.sample(ray)), 2.2) / spp
         image[i, j] += c
 
 
@@ -92,8 +88,6 @@ def shader_r_vis(world: ti.template(), camera: ti.template()):
             hit, si, vis = world.hit(ray)
             if hit:
                 c += Vec3f(si.roughness) / spp
-            else:
-                c += gamma_correction(ACES_tonemapping(world.env.sample(ray)), 2.2) / spp
         image[i, j] += c
     
 
@@ -106,8 +100,6 @@ def shader_n_vis(world: ti.template(), camera: ti.template()):
             hit, si, vis = world.hit(ray)
             if hit:
                 c += (si.normal * 0.5 + 0.5) / spp
-            else:
-                c += gamma_correction(ACES_tonemapping(world.env.sample(ray)), 2.2) / spp
         image[i, j] += c
 
 
@@ -123,7 +115,7 @@ camera.set_fov(40)
 camera.set_len(4.5, 0.05)
 camera.prepare_render()
 
-env_map = imageio.imread('assets/textures/cayley_interior_2k.exr') / 50.0
+env_map = cv2.cvtColor(cv2.imread('assets/textures/cayley_interior_2k.exr', cv2.IMREAD_UNCHANGED), cv2.COLOR_BGR2RGB) * 2
 env = ImageEnvironment(env_map)
 world = World(env=env, texture_atlas_size=(4096, 4096), max_mat_num=1024)
 world.load_gltf('assets/models/DamagedHelmet.glb')
