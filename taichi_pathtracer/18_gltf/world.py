@@ -46,7 +46,7 @@ class World:
 
                 ## base color
                 if visual.material.baseColorFactor is not None:
-                    bc_factor = visual.material.baseColorFactor[:3]
+                    bc_factor = visual.material.baseColorFactor[:3] / 255.0
                 else:
                     bc_factor = (1.0, 1.0, 1.0)
                 if visual.material.baseColorTexture is not None:
@@ -100,7 +100,7 @@ class World:
                         t0=visual.uv[mesh.faces[i][0]],
                         t1=visual.uv[mesh.faces[i][1]],
                         t2=visual.uv[mesh.faces[i][2]],
-                        mat_id=mat_id
+                        material_id=mat_id
                     ) for i in range(len(mesh.faces))
                 ]
                 self.triangles.extend(triangles)
